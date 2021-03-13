@@ -12,7 +12,7 @@ and conditions of the chosen license apply to this file.
 mod common;
 use std::borrow::Cow;
 
-pub use common::Error;
+pub use common::{CustomItem, Error};
 #[cfg(feature = "image-data")]
 pub use common::ImageData;
 
@@ -246,6 +246,17 @@ impl Clear<'_> {
 	/// regardless of the format.
 	pub fn default(self) -> Result<(), Error> {
 		self.platform.clear()
+	}
+
+	/// Places a list of representations of the same object onto the clipboard.
+	///
+	/// Each `CustomItem` is one representation of the object.
+	pub fn set_custom(&mut self, items: Vec<CustomItem>) -> Result<(), Error> {
+		self.platform.set_custom(items)
+	}
+
+	pub fn get_all(&mut self) -> Result<Vec<CustomItem>, Error> {
+		self.platform.get_all()
 	}
 }
 
