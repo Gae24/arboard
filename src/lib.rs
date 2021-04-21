@@ -255,6 +255,7 @@ impl Clear<'_> {
 		self.platform.set_custom(items)
 	}
 
+	/// Gets all available representations of the object on the clipboard.
 	pub fn get_all(&mut self) -> Result<Vec<CustomItem>, Error> {
 		self.platform.get_all()
 	}
