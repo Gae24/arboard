@@ -201,7 +201,7 @@ pub(crate) mod private {
 // 	pub data: CustomData,
 // }
 
-/// Possible custom clipboard formats.
+/// Custom clipboard formats.
 ///
 /// This reflects the list of "mandatory data types" specified by The W3C
 /// Clipboard APIs document.
