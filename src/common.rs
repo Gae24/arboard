@@ -238,6 +238,7 @@ pub enum CustomItem<'a> {
 	///
 	/// Note that this does *not* correspond to any mime type.
 	RawImage(ImageData<'a>),
+
 	/// Represents "text/uri-list"
 	///
 	/// WARNING: Line breaks are CRLF. See the documentation of [`CustomItem`].

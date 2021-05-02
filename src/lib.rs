@@ -261,8 +261,12 @@ impl Clear<'_> {
 	}
 }
 
-/// All tests grouped in one because the windows clipboard cannot be open on
-/// multiple threads at once.
+/// All tests grouped in one because we want the tests to run on a single
+/// thread.
+///
+/// Reason: The clipboard is a global resource and we don't even expect that our
+/// opreations complete successfully if they all try to manipulate the clipboard
+/// at once.
 #[cfg(test)]
 mod tests {
 	use super::*;
