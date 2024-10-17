@@ -25,7 +25,7 @@ use std::{
 };
 
 /// Returns an NSImage object on success.
-#[cfg(feature = "image-data")]
+/*#[cfg(feature = "image-data")]
 fn image_from_pixels(
 	pixels: Vec<u8>,
 	width: usize,
@@ -85,7 +85,7 @@ fn image_from_pixels(
 		unsafe { msg_send_id![NSImage::alloc(), initWithCGImage: cg_image, size:size] };
 
 	Ok(image)
-}
+}*/
 
 pub(crate) struct Clipboard {
 	pasteboard: Id<NSPasteboard>,
@@ -207,18 +207,18 @@ impl<'clipboard> Get<'clipboard> {
 
 	#[cfg(feature = "image-data")]
 	pub(crate) fn image(self) -> Result<ImageData<'static>, Error> {
-		use objc2_app_kit::NSPasteboardTypeTIFF;
+		use objc2_app_kit::NSPasteboardTypePNG;
 		use std::io::Cursor;
 
 		// XXX: There does not appear to be an alternative for obtaining images without the need for
 		// autorelease behavior.
 		let image = autoreleasepool(|_| {
-			let image_data = unsafe { self.clipboard.pasteboard.dataForType(NSPasteboardTypeTIFF) }
+			let image_data = unsafe { self.clipboard.pasteboard.dataForType(NSPasteboardTypePNG) }
 				.ok_or(Error::ContentNotAvailable)?;
 
 			let data = Cursor::new(image_data.bytes());
 
-			let reader = image::io::Reader::with_format(data, image::ImageFormat::Tiff);
+			let reader = image::io::Reader::with_format(data, image::ImageFormat::Png);
 			reader.decode().map_err(|_| Error::ConversionFailure)
 		})?;
 
@@ -295,14 +295,31 @@ impl<'clipboard> Set<'clipboard> {
 
 	#[cfg(feature = "image-data")]
 	pub(crate) fn image(self, data: ImageData) -> Result<(), Error> {
-		let pixels = data.bytes.into();
+		use objc2_app_kit::{NSPasteboardItem, NSPasteboardTypePNG};
+		use objc2_foundation::NSData;
+		use std::ffi::c_void;
+		/*let pixels = data.bytes.into();
 		let image = image_from_pixels(pixels, data.width, data.height)
-			.map_err(|_| Error::ConversionFailure)?;
+			.map_err(|_| Error::ConversionFailure)?;*/
 
 		self.clipboard.clear();
 
-		let image_array = NSArray::from_vec(vec![ProtocolObject::from_id(image)]);
-		let success = unsafe { self.clipboard.pasteboard.writeObjects(&image_array) };
+		let encoded = encode_as_png(&data)?;
+		let success = unsafe {
+			let ns_data = {
+				NSData::initWithBytes_length(
+					NSData::alloc(),
+					encoded.as_ptr() as *mut c_void,
+					encoded.len(),
+				)
+			};
+			let item = NSPasteboardItem::new();
+			item.setData_forType(&ns_data, NSPasteboardTypePNG);
+
+			let image_array = NSArray::from_vec(vec![ProtocolObject::from_id(item)]);
+
+			self.clipboard.pasteboard.writeObjects(&image_array)
+		};
 
 		add_clipboard_exclusions(self.clipboard, self.exclude_from_history);
 
@@ -345,6 +362,28 @@ fn add_clipboard_exclusions(clipboard: &mut Clipboard, exclude_from_history: boo
 				.setString_forType(ns_string!(""), ns_string!("org.nspasteboard.ConcealedType"));
 		}
 	}
+}
+
+#[cfg(feature = "image-data")]
+fn encode_as_png(image: &ImageData) -> Result<Vec<u8>, Error> {
+	use image::ImageEncoder as _;
+
+	if image.bytes.is_empty() || image.width == 0 || image.height == 0 {
+		return Err(Error::ConversionFailure);
+	}
+
+	let mut png_bytes = Vec::new();
+	let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
+	encoder
+		.write_image(
+			image.bytes.as_ref(),
+			image.width as u32,
+			image.height as u32,
+			image::ExtendedColorType::Rgba8,
+		)
+		.map_err(|_| Error::ConversionFailure)?;
+
+	Ok(png_bytes)
 }
 
 /// Apple-specific extensions to the [`Set`](crate::Set) builder.
