@@ -149,6 +149,14 @@ impl ImageData<'_> {
 	}
 }
 
+#[cfg(feature = "image-data")]
+#[derive(Debug, Clone)]
+pub enum ClipboardItem<'a> {
+	Text(Cow<'a, str>),
+	Html(Cow<'a, str>),
+	ImagePng(ImageData<'a>),
+}
+
 #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 pub(crate) struct ScopeGuard<F: FnOnce()> {
 	callback: Option<F>,

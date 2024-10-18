@@ -14,6 +14,14 @@ use crate::common::{private, Error};
 use std::{borrow::Cow, marker::PhantomData, path::PathBuf, thread, time::Duration};
 
 #[cfg(feature = "image-data")]
+use {
+	crate::ClipboardItem,
+	log::warn,
+	windows_sys::Win32::System::DataExchange::EnumClipboardFormats,
+	windows_sys::Win32::System::Ole::{CF_DIBV5, CF_UNICODETEXT},
+};
+
+#[cfg(feature = "image-data")]
 mod image_data {
 	use super::*;
 	use crate::common::ScopeGuard;
@@ -628,6 +636,37 @@ impl<'clipboard> Get<'clipboard> {
 			.map_err(|_| Error::ContentNotAvailable)?;
 
 		Ok(file_list)
+	}
+
+	#[cfg(feature = "image-data")]
+	pub(crate) fn all(self) -> Result<Vec<ClipboardItem<'static>>, Error> {
+		let _clipboard_assertion = self.clipboard?;
+
+		let mut items = Vec::new();
+		let mut format = 0;
+
+		loop {
+			format = unsafe { EnumClipboardFormats(format) };
+			if format == 0 {
+				break;
+			};
+
+			match format as u16 {
+				CF_DIBV5 => {
+					if let Ok(image) = self.image() {
+						items.push(ClipboardItem::ImagePng(image));
+					}
+				}
+				CF_UNICODETEXT => {
+					if let Ok(string) = self.text() {
+						items.push(ClipboardItem::Text(string.into()));
+					}
+				}
+				_ => warn!("Unhandled format: {format}"),
+			}
+		}
+
+		Ok(items)
 	}
 }
 

@@ -14,7 +14,7 @@ use std::{borrow::Cow, path::PathBuf};
 
 pub use common::Error;
 #[cfg(feature = "image-data")]
-pub use common::ImageData;
+pub use common::{ClipboardItem, ImageData};
 
 mod platform;
 
@@ -201,6 +201,11 @@ impl Get<'_> {
 	/// Completes the "get" operation by fetching a list of file paths from the clipboard.
 	pub fn file_list(self) -> Result<Vec<PathBuf>, Error> {
 		self.platform.file_list()
+	}
+
+	#[cfg(feature = "image-data")]
+	pub fn all(self) -> Result<Vec<ClipboardItem<'static>>, Error> {
+		self.platform.all()
 	}
 }
 
@@ -389,6 +394,21 @@ mod tests {
 			ctx.set_image(big_img_data).unwrap();
 			let got = ctx.get_image().unwrap();
 			assert_eq!(bytes_cloned.as_slice(), got.bytes.as_ref());
+		}
+		#[cfg(feature = "image-data")]
+		{
+			let mut ctx = Clipboard::new().unwrap();
+
+			let text = "hello world";
+			let html = "<b>hello</b> <i>world</i>!";
+			let bytes = [255, 100, 100, 255, 100, 255, 100, 100, 100, 100, 255, 100, 0, 0, 0, 255];
+			let image = ImageData { width: 2, height: 2, bytes: bytes.as_ref().into() };
+
+			ctx.set().text(text).unwrap();
+			ctx.set().html(html, None).unwrap();
+			ctx.set().image(image).unwrap();
+
+			let _items = ctx.get().all();
 		}
 		#[cfg(all(
 			unix,
