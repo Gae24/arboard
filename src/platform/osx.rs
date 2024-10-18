@@ -237,6 +237,11 @@ impl<'clipboard> Get<'clipboard> {
 			bytes: rgba.into_raw().into(),
 		})
 	}
+
+	#[cfg(feature = "image-data")]
+	pub(crate) fn all(self) -> Result<Vec<crate::ClipboardItem<'static>>, Error> {
+		todo!()
+	}
 }
 
 pub(crate) struct Set<'clipboard> {
