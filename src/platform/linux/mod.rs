@@ -130,6 +130,11 @@ impl<'clipboard> Get<'clipboard> {
 			Clipboard::WlDataControl(clipboard) => clipboard.get_html(self.selection),
 		}
 	}
+
+	#[cfg(feature = "image-data")]
+	pub(crate) fn all(self) -> Result<Vec<crate::ClipboardItem<'static>>, Error> {
+		todo!()
+	}
 }
 
 /// Linux-specific extensions to the [`Get`](super::Get) builder.
