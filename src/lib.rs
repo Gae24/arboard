@@ -14,7 +14,7 @@ use std::borrow::Cow;
 
 pub use common::Error;
 #[cfg(feature = "image-data")]
-pub use common::ImageData;
+pub use common::{ClipboardItem, ImageData};
 
 mod platform;
 
@@ -192,6 +192,16 @@ impl Get<'_> {
 	pub fn image(self) -> Result<ImageData<'static>, Error> {
 		self.platform.image()
 	}
+
+	/// Completes the "get" operation by fetching HTML from the clipboard.
+	pub fn html(self) -> Result<String, Error> {
+		self.platform.html()
+	}
+
+	#[cfg(feature = "image-data")]
+	pub fn all(self) -> Result<Vec<ClipboardItem<'static>>, Error> {
+		self.platform.all()
+	}
 }
 
 /// A builder for an operation that sets a value to the clipboard.
@@ -322,6 +332,15 @@ mod tests {
 			ctx.set_html(html, Some(alt_text)).unwrap();
 			assert_eq!(ctx.get_text().unwrap(), alt_text);
 		}
+		{
+			let mut ctx = Clipboard::new().unwrap();
+
+			let html = "<b>hello</b> <i>world</i>!";
+
+			ctx.set().html(html, None).unwrap();
+
+			assert_eq!(ctx.get().html().unwrap(), html);
+		}
 		#[cfg(feature = "image-data")]
 		{
 			let mut ctx = Clipboard::new().unwrap();
@@ -361,6 +380,21 @@ mod tests {
 			ctx.set_image(big_img_data).unwrap();
 			let got = ctx.get_image().unwrap();
 			assert_eq!(bytes_cloned.as_slice(), got.bytes.as_ref());
+		}
+		#[cfg(feature = "image-data")]
+		{
+			let mut ctx = Clipboard::new().unwrap();
+
+			let text = "hello world";
+			let html = "<b>hello</b> <i>world</i>!";
+			let bytes = [255, 100, 100, 255, 100, 255, 100, 100, 100, 100, 255, 100, 0, 0, 0, 255];
+			let image = ImageData { width: 2, height: 2, bytes: bytes.as_ref().into() };
+
+			ctx.set().text(text).unwrap();
+			ctx.set().html(html, None).unwrap();
+			ctx.set().image(image).unwrap();
+
+			let _items = ctx.get().all();
 		}
 		#[cfg(all(
 			unix,

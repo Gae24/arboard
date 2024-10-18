@@ -14,6 +14,14 @@ use crate::common::{private, Error};
 use std::{borrow::Cow, marker::PhantomData, thread, time::Duration};
 
 #[cfg(feature = "image-data")]
+use {
+	crate::ClipboardItem,
+	log::warn,
+	windows_sys::Win32::System::DataExchange::EnumClipboardFormats,
+	windows_sys::Win32::System::Ole::{CF_DIBV5, CF_UNICODETEXT},
+};
+
+#[cfg(feature = "image-data")]
 mod image_data {
 	use super::*;
 	use crate::common::ScopeGuard;
@@ -567,6 +575,15 @@ impl<'clipboard> Get<'clipboard> {
 		String::from_utf16(&out[..bytes_read]).map_err(|_| Error::ConversionFailure)
 	}
 
+	pub(crate) fn html(self) -> Result<String, Error> {
+		let format = clipboard_win::register_format("HTML Format")
+			.ok_or_else(|| Error::unknown("unable to register HTML format"))?;
+		let mut out: Vec<u8> = Vec::new();
+		clipboard_win::raw::get_html(format.get(), &mut out)
+			.map_err(|_| Error::unknown("failed to read clipboard string"))?;
+		String::from_utf8(out).map_err(|_| Error::ConversionFailure)
+	}
+
 	#[cfg(feature = "image-data")]
 	pub(crate) fn image(self) -> Result<ImageData<'static>, Error> {
 		const FORMAT: u32 = clipboard_win::formats::CF_DIBV5;
@@ -583,6 +600,37 @@ impl<'clipboard> Get<'clipboard> {
 			.map_err(|_| Error::unknown("failed to read clipboard image data"))?;
 
 		image_data::read_cf_dibv5(&data)
+	}
+
+	#[cfg(feature = "image-data")]
+	pub(crate) fn all(self) -> Result<Vec<ClipboardItem<'static>>, Error> {
+		let _clipboard_assertion = self.clipboard?;
+
+		let mut items = Vec::new();
+		let mut format = 0;
+
+		loop {
+			format = unsafe { EnumClipboardFormats(format) };
+			if format == 0 {
+				break;
+			};
+
+			match format as u16 {
+				CF_DIBV5 => {
+					if let Ok(image) = self.image() {
+						items.push(ClipboardItem::ImagePng(image));
+					}
+				}
+				CF_UNICODETEXT => {
+					if let Ok(string) = self.text() {
+						items.push(ClipboardItem::Text(string.into()));
+					}
+				}
+				_ => warn!("Unhandled format: {format}"),
+			}
+		}
+
+		Ok(items)
 	}
 }
 
