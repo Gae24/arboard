@@ -11,7 +11,11 @@ and conditions of the chosen license apply to this file.
 #[cfg(feature = "image-data")]
 use crate::common::ImageData;
 use crate::common::{private, Error};
+use log::warn;
 use std::{borrow::Cow, marker::PhantomData, thread, time::Duration};
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::System::DataExchange::GetClipboardData;
+use windows_sys::Win32::System::Memory::GlobalSize;
 
 #[cfg(feature = "image-data")]
 use {
@@ -181,7 +185,7 @@ mod image_data {
 		}
 	}
 
-	unsafe fn global_lock(hmem: HGLOBAL) -> Result<*mut u8, Error> {
+	pub(super) unsafe fn global_lock(hmem: HGLOBAL) -> Result<*mut u8, Error> {
 		let data_ptr = GlobalLock(hmem) as *mut u8;
 		if data_ptr.is_null() {
 			Err(last_error("Could not lock the global memory object"))
@@ -585,6 +589,19 @@ impl<'clipboard> Get<'clipboard> {
 	}
 
 	#[cfg(feature = "image-data")]
+	pub(crate) fn html_v2(self) -> Result<String, Error> {
+		let _clipboard_assertion = self.clipboard?;
+
+		let format = clipboard_win::register_format("HTML Format")
+			.ok_or_else(|| Error::unknown("unable to register HTML format"))?;
+
+		let handle = unsafe { GetClipboardData(format.get()) };
+		let data_slice = read_raw_slice(handle)?;
+		let string = extract_html(&data_slice);
+		todo!()
+	}
+
+	#[cfg(feature = "image-data")]
 	pub(crate) fn image(self) -> Result<ImageData<'static>, Error> {
 		const FORMAT: u32 = clipboard_win::formats::CF_DIBV5;
 
@@ -842,6 +859,12 @@ fn read_text() -> Result<String, Error> {
 	String::from_utf16(&out[..bytes_read]).map_err(|_| Error::ConversionFailure)
 }
 
+fn read_raw_slice(handle: &HANDLE) -> Result<&[u8], Error> {
+	let data_ptr = unsafe { image_data::global_lock(handle)? };
+	let data_len = unsafe { GlobalSize(handle) };
+	unsafe { Ok(std::slice::from_raw_parts(data_ptr, data_len)) }
+}
+
 fn wrap_html(ctn: &str) -> String {
 	let h_version = "Version:0.9";
 	let h_start_html = "\r\nStartHTML:";
@@ -875,4 +898,119 @@ fn wrap_html(ctn: &str) -> String {
 		ctn,
 		c_end_frag,
 	)
+}
+
+// Converts a clipboard item with the format CF_HTML to HTML text
+fn extract_html(html_data: &[u8]) -> Option<String> {
+	// From MSDN: https://docs.microsoft.com/en-us/windows/win32/dataxchg/html-clipboard-format
+	//
+	// CF_HTML is entirely text format [...] and uses UTF-8
+	let data_str = match std::str::from_utf8(html_data) {
+		Ok(s) => s,
+		Err(e) => {
+			warn!("Could not get the HTML data as a utf8 text. Error was: {}", e);
+			return None;
+		}
+	};
+
+	let mut end_fragment = None;
+	let mut start_fragment = None;
+	// Using `split()` instead of `lines()` because `lines()` only
+	// splits at LF or CRLF, but the CF_HTML header may represent line breaks with CR
+	for line in data_str.split(&['\r', '\n'][..]) {
+		if let Some(v) = read_html_int_field(line, "EndFragment:") {
+			end_fragment = Some(v);
+		} else if let Some(v) = read_html_int_field(line, "StartFragment:") {
+			start_fragment = Some(v);
+		}
+		if end_fragment.is_some() && start_fragment.is_some() {
+			// Stop parsing the header if we have the information we need from the header.
+			break;
+		}
+	}
+	if let (Some(start_fragment), Some(end_fragment)) = (start_fragment, end_fragment) {
+		if start_fragment <= 0 {
+			warn!("The StartFragment field in a CF_HTML clipboard item was not positive.");
+			return None;
+		}
+		let start_fragment = start_fragment as usize;
+		if start_fragment >= data_str.len() {
+			warn!("The StartFragment field in a CF_HTML clipboard item had a larger value than the length of the entire clipboard data.");
+		}
+		if end_fragment <= 0 {
+			warn!("The EndFragment field in a CF_HTML clipboard item was not positive.");
+			return None;
+		}
+		let end_fragment = end_fragment as usize;
+		if end_fragment > data_str.len() {
+			warn!("The EndFragment field in a CF_HTML clipboard item had a larger value than the length of the entire clipboard data.");
+			return None;
+		}
+		let html_text = &data_str[start_fragment..end_fragment];
+
+		// For some reason the compiler is only happy if there's this immediate step
+		// where the object is a String
+		let owned_text: String = line_endings_to_crlf(html_text).into_owned();
+		Some(owned_text)
+	} else {
+		warn!("Couldn't find either the `StartHTML` or the `StartFragment` field in the CF_HTML clipboard item");
+		None
+	}
+}
+
+fn line_endings_to_crlf<'a>(text: &'a str) -> Cow<'a, str> {
+	// TODO: The signature of this function allows the input reference to be
+	// returned within the output cow. This design allow us to avoid copying the
+	// text in case the original is already using CRLF line breaks.
+	//
+	// HOWEVER I just cannot be bothered right now to figure out how to juggle
+	// with the references/slices to get this right so I'm gonna go the easy way
+	// and just always build a new string.
+	let mut result = Vec::<u8>::with_capacity(text.len());
+	let mut prev_ch = 0;
+	for &ch in text.as_bytes() {
+		let mut push_current = true;
+		if ch == b'\r' {
+			// If this is \r, than no matter what follows the \r, we
+			// definitely want to insert a line break here.
+			result.push(b'\r');
+			result.push(b'\n');
+			push_current = false;
+		}
+		if prev_ch == b'\r' && ch == b'\n' {
+			// If this is a \r\n then no need to do anything because
+			// we already pushed a crlf at the previous character
+			push_current = false;
+		}
+		if prev_ch != b'\r' && ch == b'\n' {
+			result.push(b'\r');
+			result.push(b'\n');
+			push_current = false;
+		}
+		if push_current {
+			result.push(ch);
+		}
+		prev_ch = ch;
+	}
+	// This is safe because the original is an `&str` which is utf8,
+	// and we only replaced certain utf8 characters with other utf8 characters
+	unsafe { String::from_utf8_unchecked(result).into() }
+}
+
+fn read_html_int_field(line: &str, name_w_colon: &str) -> Option<i32> {
+	if line.starts_with(name_w_colon) {
+		let val_str = &line[name_w_colon.len()..];
+		match val_str.parse::<i32>() {
+			Ok(v) => Some(v),
+			Err(e) => {
+				warn!(
+					"Found CF_HTML field '{}', but failed to parse its value: {}",
+					name_w_colon, e
+				);
+				None
+			}
+		}
+	} else {
+		None
+	}
 }
