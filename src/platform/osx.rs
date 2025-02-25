@@ -18,7 +18,7 @@ use objc2::{
 	ClassType,
 };
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
-use objc2_foundation::{ns_string, NSArray, NSString};
+use objc2_foundation::{ns_string, NSArray, NSString, NSURL};
 use std::{
 	borrow::Cow,
 	panic::{RefUnwindSafe, UnwindSafe},
@@ -235,6 +235,29 @@ impl<'clipboard> Get<'clipboard> {
 			width: width as usize,
 			height: height as usize,
 			bytes: rgba.into_raw().into(),
+		})
+	}
+
+	pub(crate) fn file_list(self) -> Result<Vec<String>, Error> {
+		autoreleasepool(|_| {
+			let class_array = NSArray::from_slice(&[NSURL::class()]);
+			let objects = unsafe {
+				self.clipboard.pasteboard.readObjectsForClasses_options(&class_array, None)
+			};
+
+			objects
+				.map(|array| {
+					array
+						.iter()
+						.filter_map(|obj| {
+							obj.downcast::<NSURL>()
+								.ok()
+								.and_then(|url| unsafe { url.path() }.map(|p| p.to_string()))
+						})
+						.collect::<Vec<_>>()
+				})
+				.filter(|file_list| !file_list.is_empty())
+				.ok_or(Error::ContentNotAvailable)
 		})
 	}
 }
