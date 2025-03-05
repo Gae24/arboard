@@ -242,6 +242,10 @@ impl Set<'_> {
 	pub fn image(self, image: ImageData) -> Result<(), Error> {
 		self.platform.image(image)
 	}
+
+	pub fn file_list(self, file_list: Vec<String>) -> Result<(), Error> {
+		self.platform.file_list(&file_list)
+	}
 }
 
 /// A builder for an operation that clears the data from the clipboard.
@@ -445,6 +449,18 @@ mod tests {
 			assert!(was_replaced.load(atomic::Ordering::Acquire));
 
 			setter.join().unwrap();
+		}
+		{
+			let mut ctx = Clipboard::new().unwrap();
+
+			let files = ["/tmp/foo.png", "/tmp/bar.txt"];
+			files.iter().for_each(|path| {
+				std::fs::File::create(path).unwrap();
+			});
+
+			ctx.set().file_list(files.iter().map(|&s| s.to_string()).collect()).unwrap();
+
+			assert_eq!(ctx.get().file_list().unwrap(), files);
 		}
 	}
 

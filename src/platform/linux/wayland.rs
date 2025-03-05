@@ -1,5 +1,4 @@
-use std::borrow::Cow;
-use std::io::Read;
+use std::{borrow::Cow, io::Read, path::Path};
 
 use wl_clipboard_rs::{
 	copy::{self, Error as CopyError, MimeSource, MimeType, Options, Source},
@@ -180,6 +179,43 @@ impl Clipboard {
 		opts.clipboard(selection.try_into()?);
 		let source = Source::Bytes(image.into());
 		opts.copy(source, MimeType::Specific(MIME_PNG.into())).map_err(into_unknown)?;
+		Ok(())
+	}
+
+	pub(crate) fn get_file_list(
+		&mut self,
+		selection: LinuxClipboardKind,
+	) -> Result<Vec<String>, Error> {
+		self.string_for_mime(selection, paste::MimeType::Specific("text/uri-list"))
+			.map(|res| res.lines().map(|s| s.to_string()).collect())
+	}
+
+	pub(crate) fn set_file_list(
+		&self,
+		file_list: &[impl AsRef<Path>],
+		selection: LinuxClipboardKind,
+		wait: WaitConfig,
+	) -> Result<(), Error> {
+		let uri_list: Vec<String> = file_list
+			.iter()
+			.filter_map(|path| {
+				path.as_ref()
+					.canonicalize()
+					.ok()
+					.map(|abs_path| format!("file://{}", abs_path.to_str().unwrap()))
+			})
+			.collect();
+		let files = uri_list.join("\n");
+
+		let uri_mime = MimeType::Specific(String::from("text/uri-list"));
+		let mut opts = Options::new();
+		opts.foreground(matches!(wait, WaitConfig::Forever));
+		opts.clipboard(selection.try_into()?);
+		let source = Source::Bytes(files.into_bytes().into_boxed_slice());
+		opts.copy(source, uri_mime).map_err(|e| match e {
+			CopyError::PrimarySelectionUnsupported => Error::ClipboardNotSupported,
+			other => into_unknown(other),
+		})?;
 		Ok(())
 	}
 }

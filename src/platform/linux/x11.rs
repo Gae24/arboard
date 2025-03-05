@@ -16,6 +16,7 @@ use std::{
 	borrow::Cow,
 	cell::RefCell,
 	collections::{hash_map::Entry, HashMap},
+	path::Path,
 	sync::{
 		atomic::{AtomicBool, Ordering},
 		Arc,
@@ -949,6 +950,33 @@ impl Clipboard {
 		String::from_utf8(result.bytes)
 			.map_err(|_| Error::ConversionFailure)
 			.map(|res| res.lines().map(|s| s.to_string()).collect())
+	}
+
+	pub(crate) fn set_file_list(
+		&self,
+		file_list: &[impl AsRef<Path>],
+		selection: LinuxClipboardKind,
+		wait: WaitConfig,
+	) -> Result<()> {
+		let uri_list = file_list
+			.iter()
+			.filter_map(|path| {
+				path.as_ref()
+					.canonicalize()
+					.ok()
+					.map(|abs_path| format!("file://{}", abs_path.to_str().unwrap()))
+			})
+			.collect::<Vec<_>>();
+
+		if uri_list.is_empty() {
+			return Err(Error::ConversionFailure);
+		}
+
+		let files = uri_list.join("\n");
+
+		let data =
+			vec![ClipboardData { bytes: files.into_bytes(), format: self.inner.atoms.URI_LIST }];
+		self.inner.write(data, selection, wait)
 	}
 }
 

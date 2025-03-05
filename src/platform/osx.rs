@@ -18,10 +18,11 @@ use objc2::{
 	ClassType,
 };
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
-use objc2_foundation::{ns_string, NSArray, NSString};
+use objc2_foundation::{ns_string, NSArray, NSString, NSURL};
 use std::{
 	borrow::Cow,
 	panic::{RefUnwindSafe, UnwindSafe},
+	path::Path,
 };
 
 /// Returns an NSImage object on success.
@@ -239,7 +240,39 @@ impl<'clipboard> Get<'clipboard> {
 	}
 
 	pub(crate) fn file_list(self) -> Result<Vec<String>, Error> {
-		todo!()
+		let class_array = NSArray::from_slice(&[NSURL::class()]);
+		let objects =
+			unsafe { self.clipboard.pasteboard.readObjectsForClasses_options(&class_array, None) };
+
+		/*if let Some(array) = objects {
+			let file_list = array
+				.iter()
+				.flat_map(|obj| {
+					obj.downcast::<NSURL>()
+						.ok()
+						.and_then(|url| unsafe { url.path() }.map(|path| path.to_string()))
+				})
+				.collect();
+			Ok(file_list)
+		} else {
+			Err(Error::ContentNotAvailable)
+		}*/
+
+		autoreleasepool(|_| {
+			objects
+				.map(|array| {
+					array
+						.iter()
+						.filter_map(|obj| {
+							obj.downcast::<NSURL>()
+								.ok()
+								.and_then(|url| unsafe { url.path() }.map(|p| p.to_string()))
+						})
+						.collect::<Vec<_>>()
+				})
+				.filter(|file_list| !file_list.is_empty())
+				.ok_or(Error::ContentNotAvailable)
+		})
 	}
 }
 
@@ -324,6 +357,37 @@ impl<'clipboard> Set<'clipboard> {
 					"Failed to write the image to the pasteboard (`writeObjects` returned NO)."
 						.into(),
 			})
+		}
+	}
+
+	pub(crate) fn file_list(self, file_list: &[impl AsRef<Path>]) -> Result<(), Error> {
+		self.clipboard.clear();
+
+		let uri_list = file_list
+			.iter()
+			.filter_map(|path| {
+				path.as_ref().canonicalize().ok().map(|abs_path| {
+					let url = unsafe {
+						NSURL::fileURLWithPath(&NSString::from_str(abs_path.to_str().unwrap()))
+					};
+					ProtocolObject::from_retained(url)
+				})
+			})
+			.collect::<Vec<_>>();
+
+		if uri_list.is_empty() {
+			return Err(Error::ConversionFailure);
+		}
+
+		let objects = NSArray::from_retained_slice(&uri_list);
+		let success = unsafe { self.clipboard.pasteboard.writeObjects(&objects) };
+
+		add_clipboard_exclusions(self.clipboard, self.exclude_from_history);
+
+		if success {
+			Ok(())
+		} else {
+			Err(Error::Unknown { description: "NSPasteboard#writeObjects: returned false".into() })
 		}
 	}
 }
