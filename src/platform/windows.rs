@@ -635,6 +635,16 @@ impl<'clipboard> Get<'clipboard> {
 
 		image_data::read_cf_dibv5(&data)
 	}
+
+	pub(crate) fn file_list(self) -> Result<Vec<String>, Error> {
+		let _clipboard_assertion = self.clipboard?;
+
+		let mut file_list = Vec::new();
+		clipboard_win::raw::get_file_list(&mut file_list)
+			.map_err(|_| Error::ContentNotAvailable)?;
+
+		Ok(file_list)
+	}
 }
 
 pub(crate) struct Set<'clipboard> {
@@ -707,6 +717,13 @@ impl<'clipboard> Set<'clipboard> {
 		image_data::add_png_file(&image)?;
 		image_data::add_cf_dibv5(open_clipboard, image)?;
 		Ok(())
+	}
+
+	pub(crate) fn file_list(self, file_list: &[impl AsRef<str>]) -> Result<(), Error> {
+		let _clipboard_assertion = self.clipboard?;
+
+		clipboard_win::raw::set_file_list(file_list)
+			.map_err(|e| Error::unknown(format!("Setting file list failed with error code: {e}")))
 	}
 }
 

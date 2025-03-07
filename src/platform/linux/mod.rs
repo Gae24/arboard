@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Instant};
+use std::{borrow::Cow, path::Path, time::Instant};
 
 #[cfg(feature = "wayland-data-control")]
 use log::{trace, warn};
@@ -130,6 +130,14 @@ impl<'clipboard> Get<'clipboard> {
 			Clipboard::WlDataControl(clipboard) => clipboard.get_html(self.selection),
 		}
 	}
+
+	pub(crate) fn file_list(self) -> Result<Vec<String>, Error> {
+		match self.clipboard {
+			Clipboard::X11(clipboard) => clipboard.get_file_list(self.selection),
+			#[cfg(feature = "wayland-data-control")]
+			Clipboard::WlDataControl(clipboard) => clipboard.get_file_list(self.selection),
+		}
+	}
 }
 
 /// Linux-specific extensions to the [`Get`](super::Get) builder.
@@ -198,6 +206,19 @@ impl<'clipboard> Set<'clipboard> {
 
 			#[cfg(feature = "wayland-data-control")]
 			Clipboard::WlDataControl(clipboard) => clipboard.set_image(image, self.selection, self.wait),
+		}
+	}
+
+	pub(crate) fn file_list(self, file_list: &[impl AsRef<Path>]) -> Result<(), Error> {
+		match self.clipboard {
+			Clipboard::X11(clipboard) => {
+				clipboard.set_file_list(file_list, self.selection, self.wait)
+			}
+
+			#[cfg(feature = "wayland-data-control")]
+			Clipboard::WlDataControl(clipboard) => {
+				clipboard.set_file_list(file_list, self.selection, self.wait)
+			}
 		}
 	}
 }

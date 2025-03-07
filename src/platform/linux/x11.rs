@@ -16,6 +16,7 @@ use std::{
 	borrow::Cow,
 	cell::RefCell,
 	collections::{hash_map::Entry, HashMap},
+	path::Path,
 	sync::{
 		atomic::{AtomicBool, Ordering},
 		Arc,
@@ -77,6 +78,7 @@ x11rb::atom_manager! {
 		TEXT_MIME_UNKNOWN: b"text/plain",
 
 		HTML: b"text/html",
+		URI_LIST: b"text/uri-list",
 
 		PNG_MIME: b"image/png",
 
@@ -939,6 +941,41 @@ impl Clipboard {
 	) -> Result<()> {
 		let encoded = encode_as_png(&image)?;
 		let data = vec![ClipboardData { bytes: encoded, format: self.inner.atoms.PNG_MIME }];
+		self.inner.write(data, selection, wait)
+	}
+
+	pub(crate) fn get_file_list(&self, selection: LinuxClipboardKind) -> Result<Vec<String>> {
+		let result = self.inner.read(&[self.inner.atoms.URI_LIST], selection)?;
+
+		String::from_utf8(result.bytes)
+			.map_err(|_| Error::ConversionFailure)
+			.map(|res| res.lines().map(|s| s.to_string()).collect())
+	}
+
+	pub(crate) fn set_file_list(
+		&self,
+		file_list: &[impl AsRef<Path>],
+		selection: LinuxClipboardKind,
+		wait: WaitConfig,
+	) -> Result<()> {
+		let uri_list = file_list
+			.iter()
+			.filter_map(|path| {
+				path.as_ref()
+					.canonicalize()
+					.ok()
+					.map(|abs_path| format!("file://{}", abs_path.to_str().unwrap()))
+			})
+			.collect::<Vec<_>>();
+
+		if uri_list.is_empty() {
+			return Err(Error::ConversionFailure);
+		}
+
+		let files = uri_list.join("\n");
+
+		let data =
+			vec![ClipboardData { bytes: files.into_bytes(), format: self.inner.atoms.URI_LIST }];
 		self.inner.write(data, selection, wait)
 	}
 }
