@@ -182,4 +182,12 @@ impl Clipboard {
 		opts.copy(source, MimeType::Specific(MIME_PNG.into())).map_err(into_unknown)?;
 		Ok(())
 	}
+
+	pub(crate) fn get_file_list(
+		&mut self,
+		selection: LinuxClipboardKind,
+	) -> Result<Vec<String>, Error> {
+		self.string_for_mime(selection, paste::MimeType::Specific("text/uri-list"))
+			.map(|res| res.lines().map(|s| s.to_string()).collect())
+	}
 }

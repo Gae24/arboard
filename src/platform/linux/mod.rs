@@ -135,7 +135,7 @@ impl<'clipboard> Get<'clipboard> {
 		match self.clipboard {
 			Clipboard::X11(clipboard) => clipboard.get_file_list(self.selection),
 			#[cfg(feature = "wayland-data-control")]
-			Clipboard::WlDataControl(_) => todo!(),
+			Clipboard::WlDataControl(clipboard) => clipboard.get_file_list(self.selection),
 		}
 	}
 }
