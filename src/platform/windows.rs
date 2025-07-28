@@ -8,25 +8,17 @@ the Apache 2.0 or the MIT license at the licensee's choice. The terms
 and conditions of the chosen license apply to this file.
 */
 
-use crate::common::{private, Error};
-use std::{borrow::Cow, marker::PhantomData, path::PathBuf, ptr, thread, time::Duration};
-use windows_sys::Win32::{
-	Globalization::{WideCharToMultiByte, CP_UTF8},
-	System::{
-		DataExchange::{GetClipboardData, IsClipboardFormatAvailable, RegisterClipboardFormatW},
-		Memory::GlobalSize,
-		Ole::{CF_DIBV5, CF_UNICODETEXT},
-	},
+#[cfg(feature = "image-data")]
+use crate::common::ImageData;
+use crate::common::{private, ClipboardItem, Error};
+use std::{borrow::Cow, marker::PhantomData, path::PathBuf, thread, time::Duration};
+use windows_sys::Win32::System::{
+	DataExchange::{EnumClipboardFormats, GetClipboardFormatNameW},
+	Ole::CF_UNICODETEXT,
 };
-
-const HTML_FORMAT: [u16; 12] = [72, 84, 77, 76, 32, 70, 111, 114, 109, 97, 116, 0];
 
 #[cfg(feature = "image-data")]
-use {
-	crate::common::ImageData, crate::ClipboardItem, std::ffi::c_void,
-	windows_sys::Win32::System::DataExchange::EnumClipboardFormats,
-	windows_sys::Win32::System::DataExchange::GetClipboardFormatNameW,
-};
+use windows_sys::Win32::System::Ole::CF_DIBV5;
 
 #[cfg(feature = "image-data")]
 mod image_data {
@@ -618,29 +610,18 @@ impl<'clipboard> Get<'clipboard> {
 	}
 
 	#[cfg(feature = "image-data")]
-	pub(crate) fn html_v2(self) -> Result<String, Error> {
-		let _clipboard_assertion = self.clipboard?;
-
-		let format = unsafe { RegisterClipboardFormatW(HTML_FORMAT.as_ptr()) };
-
-		if format == 0 {
-			return Err(image_data::last_error("RegisterClipboardFormatW failed"));
-		}
-
-		from_raw_data(format, extract_html)
-	}
-
-	#[cfg(feature = "image-data")]
 	pub(crate) fn image(self) -> Result<ImageData<'static>, Error> {
+		const FORMAT: u32 = clipboard_win::formats::CF_DIBV5;
+
 		let _clipboard_assertion = self.clipboard?;
 
-		if unsafe { IsClipboardFormatAvailable(CF_DIBV5.into()) == 0 } {
+		if !clipboard_win::is_format_avail(FORMAT) {
 			return Err(Error::ContentNotAvailable);
 		}
 
 		let mut data = Vec::new();
 
-		clipboard_win::raw::get_vec(CF_DIBV5.into(), &mut data)
+		clipboard_win::raw::get_vec(FORMAT, &mut data)
 			.map_err(|_| Error::unknown("failed to read clipboard image data"))?;
 
 		image_data::read_cf_dibv5(&data)
@@ -656,7 +637,6 @@ impl<'clipboard> Get<'clipboard> {
 		Ok(file_list)
 	}
 
-	#[cfg(feature = "image-data")]
 	pub(crate) fn all(self) -> Result<Vec<ClipboardItem<'static>>, Error> {
 		use std::{ffi::OsString, os::windows::ffi::OsStringExt};
 
@@ -672,6 +652,7 @@ impl<'clipboard> Get<'clipboard> {
 			};
 
 			match format as u16 {
+				#[cfg(feature = "image-data")]
 				CF_DIBV5 => {
 					let mut data = Vec::new();
 
@@ -683,8 +664,12 @@ impl<'clipboard> Get<'clipboard> {
 					}
 				}
 				CF_UNICODETEXT => {
-					if let Ok(string) = get_string(format) {
-						items.push(ClipboardItem::Text(string.into()));
+					let mut buffer = Vec::new();
+					if let Err(_) = clipboard_win::raw::get_string(&mut buffer) {
+						continue;
+					}
+					if let Ok(text) = String::from_utf8(buffer) {
+						items.push(ClipboardItem::Text(text.into()));
 					}
 				}
 				_ => {
@@ -694,12 +679,16 @@ impl<'clipboard> Get<'clipboard> {
 					};
 
 					if num_chars == 0 {
-						println!("Unhandled unknown format: {format}");
+						println!("Unknown format: {format}");
 					} else {
 						let os_str = OsString::from_wide(&wstr[0..num_chars as usize]);
 
 						if os_str == "HTML Format" {
-							if let Ok(html) = from_raw_data(format, extract_html) {
+							let mut buffer = Vec::new();
+							if let Err(_) = clipboard_win::raw::get_html(format, &mut buffer) {
+								continue;
+							}
+							if let Ok(html) = String::from_utf8(buffer) {
 								items.push(ClipboardItem::Html(html.into()));
 							}
 						} else {
@@ -887,79 +876,6 @@ impl<'clipboard> Clear<'clipboard> {
 	}
 }
 
-fn get_string(format: u32) -> Result<String, Error> {
-	// This pointer must not be free'd.
-	let ptr = unsafe { GetClipboardData(format) };
-	if ptr == 0 {
-		return Err(Error::ContentNotAvailable);
-	}
-
-	unsafe {
-		let hdata = ptr as *mut c_void;
-		let data_ptr = image_data::global_lock(hdata)?;
-
-		let char_count = GlobalSize(hdata) as usize / std::mem::size_of::<u16>();
-		let storage_req_size = WideCharToMultiByte(
-			CP_UTF8,
-			0,
-			data_ptr as _,
-			char_count as _,
-			ptr::null_mut(),
-			0,
-			ptr::null(),
-			ptr::null_mut(),
-		);
-		if storage_req_size == 0 {
-			return Err(Error::ConversionFailure);
-		}
-
-		let mut utf8: Vec<u8> = Vec::with_capacity(storage_req_size as usize);
-		let output_size = WideCharToMultiByte(
-			CP_UTF8,
-			0,
-			data_ptr as _,
-			char_count as _,
-			utf8.as_mut_ptr(),
-			storage_req_size,
-			ptr::null(),
-			ptr::null_mut(),
-		);
-		if output_size == 0 {
-			return Err(Error::ConversionFailure);
-		}
-		utf8.set_len(storage_req_size as usize);
-
-		// WideCharToMultiByte appends a terminating null character,
-		// if the original string included one or if the length of the original
-		// was set to -1
-		if let Some(last_byte) = utf8.last() {
-			if *last_byte == 0 {
-				utf8.set_len(utf8.len() - 1);
-			}
-		}
-		Ok(String::from_utf8_unchecked(utf8))
-	}
-}
-
-fn from_raw_data<F, T>(format: u32, fun: F) -> Result<T, Error>
-where
-	F: FnOnce(&[u8]) -> Result<T, Error>,
-{
-	let data_slice = unsafe {
-		let ptr = GetClipboardData(format);
-		if ptr == 0 {
-			return Err(Error::ContentNotAvailable);
-		}
-
-		let handle = ptr as *mut c_void;
-		let data_ptr = image_data::global_lock(handle)?;
-		let data_len = GlobalSize(handle);
-		std::slice::from_raw_parts(data_ptr, data_len)
-	};
-
-	fun(data_slice)
-}
-
 fn wrap_html(ctn: &str) -> String {
 	let h_version = "Version:0.9";
 	let h_start_html = "\r\nStartHTML:";
@@ -981,27 +897,4 @@ fn wrap_html(ctn: &str) -> String {
 	format!(
 		"{h_version}{h_start_html}{n_start_html:010}{h_end_html}{n_end_html:010}{h_start_frag}{n_start_frag:010}{h_end_frag}{n_end_frag:010}{c_start_frag}{ctn}{c_end_frag}"
 	)
-}
-
-fn extract_html(content: &[u8]) -> Result<String, Error> {
-	let start_fragment = "<!--StartFragment-->";
-	let end_fragment = "<!--EndFragment-->";
-
-	let data_str = match std::str::from_utf8(content) {
-		Ok(s) => s,
-		Err(_) => {
-			return Err(Error::unknown("Could not get the HTML data as a utf8 text."));
-		}
-	};
-
-	let start_pos = if let Some(pos) = data_str.find(start_fragment) {
-		pos + start_fragment.len()
-	} else {
-		return Err(Error::unknown("Unable to find StartFragment while extracting HTML text"));
-	};
-	let Some(end_pos) = data_str.find(end_fragment) else {
-		return Err(Error::unknown("Unable to find EndFragment while extracting HTML text"));
-	};
-
-	Ok(data_str[start_pos..end_pos].to_string())
 }

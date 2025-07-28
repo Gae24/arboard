@@ -10,8 +10,8 @@ fn main() {
 	let bytes = [255, 100, 100, 255, 100, 255, 100, 100, 100, 100, 255, 100, 0, 0, 0, 255];
 	let image = ImageData { width: 2, height: 2, bytes: bytes.as_ref().into() };
 
-	ctx.set_text(text).unwrap();
-	ctx.set_html(html, None).unwrap();
+	//ctx.set_text(text).unwrap();
+	//ctx.set_html(html, None).unwrap();
 	//ctx.set().image(image.clone()).unwrap();
 
 	let items = ctx.get().all().unwrap();

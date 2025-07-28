@@ -12,9 +12,9 @@ and conditions of the chosen license apply to this file.
 mod common;
 use std::{borrow::Cow, path::PathBuf};
 
-pub use common::Error;
 #[cfg(feature = "image-data")]
-pub use common::{ClipboardItem, ImageData};
+pub use common::ImageData;
+pub use common::{ClipboardItem, Error};
 
 mod platform;
 
@@ -203,7 +203,6 @@ impl Get<'_> {
 		self.platform.file_list()
 	}
 
-	#[cfg(feature = "image-data")]
 	pub fn all(self) -> Result<Vec<ClipboardItem<'static>>, Error> {
 		self.platform.all()
 	}

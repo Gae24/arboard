@@ -8,7 +8,6 @@ the Apache 2.0 or the MIT license at the licensee's choice. The terms
 and conditions of the chosen license apply to this file.
 */
 
-#[cfg(feature = "image-data")]
 use std::borrow::Cow;
 
 /// An error that might happen during a clipboard operation.
@@ -149,11 +148,11 @@ impl ImageData<'_> {
 	}
 }
 
-#[cfg(feature = "image-data")]
 #[derive(Debug, Clone)]
 pub enum ClipboardItem<'a> {
 	Text(Cow<'a, str>),
 	Html(Cow<'a, str>),
+	#[cfg(feature = "image-data")]
 	ImagePng(ImageData<'a>),
 }
 
