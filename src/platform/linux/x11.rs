@@ -16,7 +16,7 @@ use std::{
 	borrow::Cow,
 	cell::RefCell,
 	collections::{hash_map::Entry, HashMap},
-	path::PathBuf,
+	path::{Path, PathBuf},
 	sync::{
 		atomic::{AtomicBool, Ordering},
 		Arc,
@@ -46,8 +46,8 @@ use x11rb::{
 #[cfg(feature = "image-data")]
 use super::encode_as_png;
 use super::{
-	into_unknown, paths_from_uri_list, LinuxClipboardKind, WaitConfig, KDE_EXCLUSION_HINT,
-	KDE_EXCLUSION_MIME,
+	into_unknown, paths_from_uri_list, paths_to_uri_list, LinuxClipboardKind, WaitConfig,
+	KDE_EXCLUSION_HINT, KDE_EXCLUSION_MIME,
 };
 #[cfg(feature = "image-data")]
 use crate::ImageData;
@@ -178,8 +178,9 @@ impl XContext {
 #[derive(Default)]
 struct Selection {
 	data: RwLock<Option<Vec<ClipboardData>>>,
-	/// Mutex around nothing to use with the below condvar.
-	mutex: Mutex<()>,
+	/// Mutex around when this selection was last changed by us
+	/// for both use with the below condvar and logging.
+	mutex: Mutex<Option<Instant>>,
 	/// A condvar that is notified when the contents of this clipboard are changed.
 	///
 	/// This is associated with `Self::mutex`.
@@ -266,6 +267,8 @@ impl Inner {
 		// dropping the `data_guard` and calling `wait[_for]` and that we don't we wake other
 		// threads in that position.
 		let mut guard = selection.mutex.lock();
+		// Record the time we modify the selection.
+		*guard = Some(Instant::now());
 
 		// Notify any existing waiting threads that we have changed the data in the selection.
 		// It is important that the mutex is locked to prevent this notification getting lost.
@@ -847,7 +850,10 @@ fn serve_requests(context: Arc<Inner>) -> Result<(), Box<dyn std::error::Error>>
 					context.atom_name_dbg(event.target),
 				);
 				// Someone is requesting the clipboard content from us.
-				context.handle_selection_request(event).map_err(into_unknown)?;
+				if let Err(e) = context.handle_selection_request(event) {
+					error!("Failed to handle selection request: {e}");
+					continue;
+				}
 
 				// if we are in the progress of saving to the clipboard manager
 				// make sure we save that we have finished writing
@@ -1057,6 +1063,19 @@ impl Clipboard {
 			.map_err(|_| Error::ConversionFailure)
 			.map(paths_from_uri_list)
 	}
+
+	pub(crate) fn set_file_list(
+		&self,
+		file_list: &[impl AsRef<Path>],
+		selection: LinuxClipboardKind,
+		wait: WaitConfig,
+	) -> Result<()> {
+		let files = paths_to_uri_list(file_list)?;
+
+		let data =
+			vec![ClipboardData { bytes: files.into_bytes(), format: self.inner.atoms.URI_LIST }];
+		self.inner.write(data, selection, wait)
+	}
 }
 
 impl Drop for Clipboard {
@@ -1086,7 +1105,10 @@ impl Drop for Clipboard {
 				return;
 			}
 			if let Some(global_cb) = global_cb {
-				if let Err(e) = global_cb.server_handle.join() {
+				let GlobalClipboard { inner, server_handle } = global_cb;
+				drop(inner);
+
+				if let Err(e) = server_handle.join() {
 					// Let's try extracting the error message
 					let message;
 					if let Some(msg) = e.downcast_ref::<&'static str>() {
@@ -1103,6 +1125,49 @@ impl Drop for Clipboard {
 						);
 					} else {
 						error!("The clipboard server thread panicked.");
+					}
+				}
+
+				// By this point we've dropped the Global's reference to `Inner` and the background
+				// thread has exited which means it also dropped its reference. Therefore `self.inner` should
+				// be the last strong count.
+				//
+				// Note: The following is all best effort and is only for logging. Nothing is guaranteed to execute
+				// or log.
+				#[cfg(debug_assertions)]
+				if let Some(inner) = Arc::get_mut(&mut self.inner) {
+					use std::io::IsTerminal;
+
+					let mut change_timestamps = Vec::with_capacity(2);
+					let mut collect_changed = |sel: &mut Mutex<Option<Instant>>| {
+						if let Some(changed) = sel.get_mut() {
+							change_timestamps.push(*changed);
+						}
+					};
+
+					collect_changed(&mut inner.clipboard.mutex);
+					collect_changed(&mut inner.primary.mutex);
+					collect_changed(&mut inner.secondary.mutex);
+
+					change_timestamps.sort();
+					if let Some(last) = change_timestamps.last() {
+						let elapsed = last.elapsed().as_millis();
+						// This number has no meaning, its just a guess for how long
+						// might be reasonable to give a clipboard manager a chance to
+						// save contents based ~roughly on the handoff timeout.
+						if elapsed > 100 {
+							return;
+						}
+
+						// If the app isn't running in a terminal don't print, use log instead.
+						// Printing has a higher chance of being seen though, so its our default.
+						// Its also close enough to a `debug_assert!` that it shouldn't come across strange.
+						let msg = format!("Clipboard was dropped very quickly after writing ({elapsed}ms); clipboard managers may not have seen the contents\nConsider keeping `Clipboard` in more persistent state somewhere or keeping the contents alive longer using `SetLinuxExt` and/or threads.");
+						if std::io::stderr().is_terminal() {
+							eprintln!("{msg}");
+						} else {
+							log::warn!("{msg}");
+						}
 					}
 				}
 			}
