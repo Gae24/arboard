@@ -656,16 +656,16 @@ impl<'clipboard> Get<'clipboard> {
 				CF_DIBV5 => {
 					let mut data = Vec::new();
 
-					clipboard_win::raw::get_vec(clipboard_win::formats::CF_DIBV5, &mut data)
-						.map_err(|_| Error::unknown("failed to read clipboard image data"))?;
-
+					if clipboard_win::raw::get_vec(CF_DIBV5.into(), &mut data).is_err() {
+						continue;
+					}
 					if let Ok(image) = image_data::read_cf_dibv5(&data) {
-						items.push(ClipboardItem::ImagePng(image));
+						items.push(ClipboardItem::RawImage(image));
 					}
 				}
 				CF_UNICODETEXT => {
 					let mut buffer = Vec::new();
-					if let Err(_) = clipboard_win::raw::get_string(&mut buffer) {
+					if clipboard_win::raw::get_string(&mut buffer).is_err() {
 						continue;
 					}
 					if let Ok(text) = String::from_utf8(buffer) {
@@ -680,20 +680,26 @@ impl<'clipboard> Get<'clipboard> {
 
 					if num_chars == 0 {
 						println!("Unknown format: {format}");
-					} else {
-						let os_str = OsString::from_wide(&wstr[0..num_chars as usize]);
+						continue;
+					}
 
-						if os_str == "HTML Format" {
-							let mut buffer = Vec::new();
-							if let Err(_) = clipboard_win::raw::get_html(format, &mut buffer) {
-								continue;
-							}
-							if let Ok(html) = String::from_utf8(buffer) {
-								items.push(ClipboardItem::Html(html.into()));
-							}
-						} else {
-							println!("Unhandled format: {format} with name: {:?}", os_str);
+					let os_str = OsString::from_wide(&wstr[0..num_chars as usize]);
+					if os_str == "HTML Format" {
+						let mut buffer = Vec::new();
+						if clipboard_win::raw::get_html(format, &mut buffer).is_err() {
+							continue;
 						}
+						if let Ok(html) = String::from_utf8(buffer) {
+							items.push(ClipboardItem::Html(html.into()));
+						}
+					} else if os_str == "PNG" {
+						let mut buffer = Vec::new();
+						if clipboard_win::raw::get_vec(format, &mut buffer).is_err() {
+							continue;
+						}
+						items.push(ClipboardItem::ImagePng(buffer.into()));
+					} else {
+						println!("Unhandled format: {format} with name: {:?}", os_str);
 					}
 				}
 			}

@@ -8,7 +8,7 @@ the Apache 2.0 or the MIT license at the licensee's choice. The terms
 and conditions of the chosen license apply to this file.
 */
 
-use std::borrow::Cow;
+use std::{borrow::Cow, path::PathBuf};
 
 /// An error that might happen during a clipboard operation.
 ///
@@ -148,12 +148,23 @@ impl ImageData<'_> {
 	}
 }
 
+/// Custom clipboard formats.
+///
+/// This reflects the list of "mandatory data types" specified by The W3C
+/// Clipboard APIs document.
+/// <https://www.w3.org/TR/2021/WD-clipboard-apis-20210203/#mandatory-data-types>
+///
+/// Each item is mapped to/from the platform native format according the
+/// following algorithm
+/// <https://www.w3.org/TR/2023/WD-clipboard-apis-20230516/#to-os-specific-well-known-format>
 #[derive(Debug, Clone)]
 pub enum ClipboardItem<'a> {
 	Text(Cow<'a, str>),
 	Html(Cow<'a, str>),
+	ImagePng(Cow<'a, [u8]>),
+	FileList(Vec<PathBuf>),
 	#[cfg(feature = "image-data")]
-	ImagePng(ImageData<'a>),
+	RawImage(ImageData<'a>),
 }
 
 #[cfg(any(windows, all(unix, not(target_os = "macos"))))]

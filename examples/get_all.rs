@@ -20,12 +20,14 @@ fn main() {
 		match item {
 			ClipboardItem::Text(data) => println!("Text added to clipboard was {text}, got {data}"),
 			ClipboardItem::Html(data) => println!("Html added to clipboard was {html}, got {data}"),
-			ClipboardItem::ImagePng(data) => {
+			ClipboardItem::RawImage(data) => {
 				println!(
 					"Image added to clipboard was :\n{:?} got :\n{:?}",
 					image.bytes, data.bytes
 				);
 			}
+			ClipboardItem::FileList(_) => todo!(),
+			ClipboardItem::ImagePng(bytes) => println!("Got PNG bytes: {:?}", bytes),
 		}
 	}
 }

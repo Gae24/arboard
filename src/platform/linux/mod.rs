@@ -153,7 +153,6 @@ impl<'clipboard> Get<'clipboard> {
 		}
 	}
 
-	#[cfg(feature = "image-data")]
 	pub(crate) fn all(self) -> Result<Vec<crate::ClipboardItem<'static>>, Error> {
 		todo!()
 	}
