@@ -8,8 +8,7 @@ the Apache 2.0 or the MIT license at the licensee's choice. The terms
 and conditions of the chosen license apply to this file.
 */
 
-#[cfg(feature = "image-data")]
-use std::borrow::Cow;
+use std::{borrow::Cow, path::PathBuf};
 
 /// An error that might happen during a clipboard operation.
 ///
@@ -30,7 +29,7 @@ pub enum Error {
 	/// - Using the Secondary clipboard on Wayland
 	ClipboardNotSupported,
 
-	/// The native clipboard is not accessible due to being held by an other party.
+	/// The native clipboard is not accessible due to being held by another party.
 	///
 	/// This "other party" could be a different process or it could be within
 	/// the same program. So for example you may get this error when trying
@@ -57,7 +56,7 @@ impl std::fmt::Display for Error {
 		match self {
 			Error::ContentNotAvailable => f.write_str("The clipboard contents were not available in the requested format or the clipboard is empty."),
 			Error::ClipboardNotSupported => f.write_str("The selected clipboard is not supported with the current system configuration."),
-			Error::ClipboardOccupied => f.write_str("The native clipboard is not accessible due to being held by an other party."),
+			Error::ClipboardOccupied => f.write_str("The native clipboard is not accessible due to being held by another party."),
 			Error::ConversionFailure => f.write_str("The image or the text that was about the be transferred to/from the clipboard could not be converted to the appropriate format."),
 			Error::Unknown { description } => f.write_fmt(format_args!("Unknown error while interacting with the clipboard: {description}")),
 		}
@@ -147,6 +146,25 @@ impl ImageData<'_> {
 			bytes: self.bytes.clone().into_owned().into(),
 		}
 	}
+}
+
+/// Custom clipboard formats.
+///
+/// This reflects the list of "mandatory data types" specified by The W3C
+/// Clipboard APIs document.
+/// <https://www.w3.org/TR/2021/WD-clipboard-apis-20210203/#mandatory-data-types>
+///
+/// Each item is mapped to/from the platform native format according the
+/// following algorithm
+/// <https://www.w3.org/TR/2023/WD-clipboard-apis-20230516/#to-os-specific-well-known-format>
+#[derive(Debug, Clone)]
+pub enum ClipboardItem<'a> {
+	Text(Cow<'a, str>),
+	Html(Cow<'a, str>),
+	ImagePng(Cow<'a, [u8]>),
+	FileList(Vec<PathBuf>),
+	#[cfg(feature = "image-data")]
+	RawImage(ImageData<'a>),
 }
 
 #[cfg(any(windows, all(unix, not(target_os = "macos"))))]

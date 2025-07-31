@@ -269,6 +269,10 @@ impl<'clipboard> Get<'clipboard> {
 				.ok_or(Error::ContentNotAvailable)
 		})
 	}
+
+	pub(crate) fn all(self) -> Result<Vec<crate::ClipboardItem<'static>>, Error> {
+		todo!()
+	}
 }
 
 pub(crate) struct Set<'clipboard> {

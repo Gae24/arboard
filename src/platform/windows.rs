@@ -10,8 +10,15 @@ and conditions of the chosen license apply to this file.
 
 #[cfg(feature = "image-data")]
 use crate::common::ImageData;
-use crate::common::{private, Error};
+use crate::common::{private, ClipboardItem, Error};
 use std::{borrow::Cow, marker::PhantomData, path::PathBuf, thread, time::Duration};
+use windows_sys::Win32::System::{
+	DataExchange::{EnumClipboardFormats, GetClipboardFormatNameW},
+	Ole::CF_UNICODETEXT,
+};
+
+#[cfg(feature = "image-data")]
+use windows_sys::Win32::System::Ole::CF_DIBV5;
 
 #[cfg(feature = "image-data")]
 mod image_data {
@@ -35,9 +42,9 @@ mod image_data {
 		},
 	};
 
-	fn last_error(message: &str) -> Error {
+	pub(super) fn last_error(message: &str) -> Error {
 		let os_error = io::Error::last_os_error();
-		Error::unknown(format!("{}: {}", message, os_error))
+		Error::unknown(format!("{message}: {os_error}"))
 	}
 
 	unsafe fn global_unlock_checked(hdata: HGLOBAL) {
@@ -177,7 +184,7 @@ mod image_data {
 		}
 	}
 
-	unsafe fn global_lock(hmem: HGLOBAL) -> Result<*mut u8, Error> {
+	pub(super) unsafe fn global_lock(hmem: HGLOBAL) -> Result<*mut u8, Error> {
 		let data_ptr = GlobalLock(hmem).cast::<u8>();
 		if data_ptr.is_null() {
 			Err(last_error("Could not lock the global memory object"))
@@ -629,6 +636,77 @@ impl<'clipboard> Get<'clipboard> {
 
 		Ok(file_list)
 	}
+
+	pub(crate) fn all(self) -> Result<Vec<ClipboardItem<'static>>, Error> {
+		use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+		let _clipboard_assertion = self.clipboard?;
+
+		let mut items = Vec::new();
+		let mut format = 0;
+
+		loop {
+			format = unsafe { EnumClipboardFormats(format) };
+			if format == 0 {
+				break;
+			};
+
+			match format as u16 {
+				#[cfg(feature = "image-data")]
+				CF_DIBV5 => {
+					let mut data = Vec::new();
+
+					if clipboard_win::raw::get_vec(CF_DIBV5.into(), &mut data).is_err() {
+						continue;
+					}
+					if let Ok(image) = image_data::read_cf_dibv5(&data) {
+						items.push(ClipboardItem::RawImage(image));
+					}
+				}
+				CF_UNICODETEXT => {
+					let mut buffer = Vec::new();
+					if clipboard_win::raw::get_string(&mut buffer).is_err() {
+						continue;
+					}
+					if let Ok(text) = String::from_utf8(buffer) {
+						items.push(ClipboardItem::Text(text.into()));
+					}
+				}
+				_ => {
+					let mut wstr = [0u16; 32];
+					let num_chars = unsafe {
+						GetClipboardFormatNameW(format, wstr.as_mut_ptr(), wstr.len() as i32)
+					};
+
+					if num_chars == 0 {
+						println!("Unknown format: {format}");
+						continue;
+					}
+
+					let os_str = OsString::from_wide(&wstr[0..num_chars as usize]);
+					if os_str == "HTML Format" {
+						let mut buffer = Vec::new();
+						if clipboard_win::raw::get_html(format, &mut buffer).is_err() {
+							continue;
+						}
+						if let Ok(html) = String::from_utf8(buffer) {
+							items.push(ClipboardItem::Html(html.into()));
+						}
+					} else if os_str == "PNG" {
+						let mut buffer = Vec::new();
+						if clipboard_win::raw::get_vec(format, &mut buffer).is_err() {
+							continue;
+						}
+						items.push(ClipboardItem::ImagePng(buffer.into()));
+					} else {
+						println!("Unhandled format: {format} with name: {:?}", os_str);
+					}
+				}
+			}
+		}
+
+		Ok(items)
+	}
 }
 
 pub(crate) struct Set<'clipboard> {
@@ -823,18 +901,6 @@ fn wrap_html(ctn: &str) -> String {
 	let n_end_frag = n_start_frag + ctn.len();
 	let n_end_html = n_end_frag + c_end_frag.len();
 	format!(
-		"{}{}{:010}{}{:010}{}{:010}{}{:010}{}{}{}",
-		h_version,
-		h_start_html,
-		n_start_html,
-		h_end_html,
-		n_end_html,
-		h_start_frag,
-		n_start_frag,
-		h_end_frag,
-		n_end_frag,
-		c_start_frag,
-		ctn,
-		c_end_frag,
+		"{h_version}{h_start_html}{n_start_html:010}{h_end_html}{n_end_html:010}{h_start_frag}{n_start_frag:010}{h_end_frag}{n_end_frag:010}{c_start_frag}{ctn}{c_end_frag}"
 	)
 }
