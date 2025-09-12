@@ -1,11 +1,21 @@
-use std::{borrow::Cow, time::Instant};
+use std::{
+	borrow::Cow,
+	os::unix::ffi::OsStrExt,
+	path::{Path, PathBuf},
+	time::Instant,
+};
 
 #[cfg(feature = "wayland-data-control")]
 use log::{trace, warn};
+use percent_encoding::{percent_decode, percent_encode, AsciiSet, CONTROLS};
 
 #[cfg(feature = "image-data")]
 use crate::ImageData;
 use crate::{common::private, Error};
+
+// Magic strings used in `Set::exclude_from_history()` on linux
+const KDE_EXCLUSION_MIME: &str = "x-kde-passwordManagerHint";
+const KDE_EXCLUSION_HINT: &[u8] = b"secret";
 
 mod x11;
 
@@ -36,6 +46,46 @@ fn encode_as_png(image: &ImageData) -> Result<Vec<u8>, Error> {
 		.map_err(|_| Error::ConversionFailure)?;
 
 	Ok(png_bytes)
+}
+
+fn paths_from_uri_list(uri_list: Vec<u8>) -> Vec<PathBuf> {
+	uri_list
+		.split(|char| *char == b'\n')
+		.filter_map(|line| line.strip_prefix(b"file://"))
+		.filter_map(|s| percent_decode(s).decode_utf8().ok())
+		.map(|decoded| PathBuf::from(decoded.as_ref()))
+		.collect()
+}
+
+fn paths_to_uri_list(file_list: &[impl AsRef<Path>]) -> Result<String, Error> {
+	// The characters that require encoding, which includes £ and € but they can't be added to the set.
+	const ASCII_SET: &AsciiSet = &CONTROLS
+		.add(b'#')
+		.add(b';')
+		.add(b'?')
+		.add(b'[')
+		.add(b']')
+		.add(b' ')
+		.add(b'\"')
+		.add(b'%')
+		.add(b'<')
+		.add(b'>')
+		.add(b'\\')
+		.add(b'^')
+		.add(b'`')
+		.add(b'{')
+		.add(b'|')
+		.add(b'}');
+
+	file_list
+		.iter()
+		.filter_map(|path| {
+			path.as_ref().canonicalize().ok().map(|path| {
+				format!("file://{}", percent_encode(path.as_os_str().as_bytes(), ASCII_SET))
+			})
+		})
+		.reduce(|uri_list, uri| uri_list + "\n" + &uri)
+		.ok_or(Error::ConversionFailure)
 }
 
 /// Clipboard selection
@@ -122,6 +172,22 @@ impl<'clipboard> Get<'clipboard> {
 			Clipboard::WlDataControl(clipboard) => clipboard.get_image(self.selection),
 		}
 	}
+
+	pub(crate) fn html(self) -> Result<String, Error> {
+		match self.clipboard {
+			Clipboard::X11(clipboard) => clipboard.get_html(self.selection),
+			#[cfg(feature = "wayland-data-control")]
+			Clipboard::WlDataControl(clipboard) => clipboard.get_html(self.selection),
+		}
+	}
+
+	pub(crate) fn file_list(self) -> Result<Vec<PathBuf>, Error> {
+		match self.clipboard {
+			Clipboard::X11(clipboard) => clipboard.get_file_list(self.selection),
+			#[cfg(feature = "wayland-data-control")]
+			Clipboard::WlDataControl(clipboard) => clipboard.get_file_list(self.selection),
+		}
+	}
 }
 
 /// Linux-specific extensions to the [`Get`](super::Get) builder.
@@ -158,38 +224,75 @@ pub(crate) struct Set<'clipboard> {
 	clipboard: &'clipboard mut Clipboard,
 	wait: WaitConfig,
 	selection: LinuxClipboardKind,
+	exclude_from_history: bool,
 }
 
 impl<'clipboard> Set<'clipboard> {
 	pub(crate) fn new(clipboard: &'clipboard mut Clipboard) -> Self {
-		Self { clipboard, wait: WaitConfig::default(), selection: LinuxClipboardKind::Clipboard }
+		Self {
+			clipboard,
+			wait: WaitConfig::default(),
+			selection: LinuxClipboardKind::Clipboard,
+			exclude_from_history: false,
+		}
 	}
 
 	pub(crate) fn text(self, text: Cow<'_, str>) -> Result<(), Error> {
 		match self.clipboard {
-			Clipboard::X11(clipboard) => clipboard.set_text(text, self.selection, self.wait),
+			Clipboard::X11(clipboard) => {
+				clipboard.set_text(text, self.selection, self.wait, self.exclude_from_history)
+			}
 
 			#[cfg(feature = "wayland-data-control")]
-			Clipboard::WlDataControl(clipboard) => clipboard.set_text(text, self.selection, self.wait),
+			Clipboard::WlDataControl(clipboard) => {
+				clipboard.set_text(text, self.selection, self.wait, self.exclude_from_history)
+			}
 		}
 	}
 
 	pub(crate) fn html(self, html: Cow<'_, str>, alt: Option<Cow<'_, str>>) -> Result<(), Error> {
 		match self.clipboard {
-			Clipboard::X11(clipboard) => clipboard.set_html(html, alt, self.selection, self.wait),
+			Clipboard::X11(clipboard) => {
+				clipboard.set_html(html, alt, self.selection, self.wait, self.exclude_from_history)
+			}
 
 			#[cfg(feature = "wayland-data-control")]
-			Clipboard::WlDataControl(clipboard) => clipboard.set_html(html, alt, self.selection, self.wait),
+			Clipboard::WlDataControl(clipboard) => {
+				clipboard.set_html(html, alt, self.selection, self.wait, self.exclude_from_history)
+			}
 		}
 	}
 
 	#[cfg(feature = "image-data")]
 	pub(crate) fn image(self, image: ImageData<'_>) -> Result<(), Error> {
 		match self.clipboard {
-			Clipboard::X11(clipboard) => clipboard.set_image(image, self.selection, self.wait),
+			Clipboard::X11(clipboard) => {
+				clipboard.set_image(image, self.selection, self.wait, self.exclude_from_history)
+			}
 
 			#[cfg(feature = "wayland-data-control")]
-			Clipboard::WlDataControl(clipboard) => clipboard.set_image(image, self.selection, self.wait),
+			Clipboard::WlDataControl(clipboard) => {
+				clipboard.set_image(image, self.selection, self.wait, self.exclude_from_history)
+			}
+		}
+	}
+
+	pub(crate) fn file_list(self, file_list: &[impl AsRef<Path>]) -> Result<(), Error> {
+		match self.clipboard {
+			Clipboard::X11(clipboard) => clipboard.set_file_list(
+				file_list,
+				self.selection,
+				self.wait,
+				self.exclude_from_history,
+			),
+
+			#[cfg(feature = "wayland-data-control")]
+			Clipboard::WlDataControl(clipboard) => clipboard.set_file_list(
+				file_list,
+				self.selection,
+				self.wait,
+				self.exclude_from_history,
+			),
 		}
 	}
 }
@@ -254,6 +357,13 @@ pub trait SetExtLinux: private::Sealed {
 	/// # }
 	/// ```
 	fn clipboard(self, selection: LinuxClipboardKind) -> Self;
+
+	/// Excludes the data which will be set on the clipboard from being added to
+	/// the desktop clipboard managers' histories by adding the MIME-Type `x-kde-passwordMangagerHint`
+	/// to the clipboard's selection data.
+	///
+	/// This is the most widely adopted convention on Linux.
+	fn exclude_from_history(self) -> Self;
 }
 
 impl SetExtLinux for crate::Set<'_> {
@@ -269,6 +379,11 @@ impl SetExtLinux for crate::Set<'_> {
 
 	fn wait_until(mut self, deadline: Instant) -> Self {
 		self.platform.wait = WaitConfig::Until(deadline);
+		self
+	}
+
+	fn exclude_from_history(mut self) -> Self {
+		self.platform.exclude_from_history = true;
 		self
 	}
 }
@@ -287,10 +402,11 @@ impl<'clipboard> Clear<'clipboard> {
 	}
 
 	fn clear_inner(self, selection: LinuxClipboardKind) -> Result<(), Error> {
-		let mut set = Set::new(self.clipboard);
-		set.selection = selection;
-
-		set.text(Cow::Borrowed(""))
+		match self.clipboard {
+			Clipboard::X11(clipboard) => clipboard.clear(selection),
+			#[cfg(feature = "wayland-data-control")]
+			Clipboard::WlDataControl(clipboard) => clipboard.clear(selection),
+		}
 	}
 }
 
@@ -320,5 +436,30 @@ pub trait ClearExtLinux: private::Sealed {
 impl ClearExtLinux for crate::Clear<'_> {
 	fn clipboard(self, selection: LinuxClipboardKind) -> Result<(), Error> {
 		self.platform.clear_inner(selection)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_decoding_uri_list() {
+		// Test that paths_from_uri_list correctly decodes
+		// differents percent encoded characters
+		let file_list = [
+			"file:///tmp/bar.log",
+			"file:///tmp/test%5C.txt",
+			"file:///tmp/foo%3F.png",
+			"file:///tmp/white%20space.txt",
+		];
+
+		let paths = vec![
+			PathBuf::from("/tmp/bar.log"),
+			PathBuf::from("/tmp/test\\.txt"),
+			PathBuf::from("/tmp/foo?.png"),
+			PathBuf::from("/tmp/white space.txt"),
+		];
+		assert_eq!(paths_from_uri_list(file_list.join("\n").into()), paths);
 	}
 }

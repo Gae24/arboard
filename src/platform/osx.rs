@@ -12,16 +12,20 @@ and conditions of the chosen license apply to this file.
 use crate::common::ImageData;
 use crate::common::{private, Error};
 use objc2::{
-	msg_send_id,
-	rc::{autoreleasepool, Id},
+	msg_send,
+	rc::{autoreleasepool, Retained},
 	runtime::ProtocolObject,
 	ClassType,
 };
-use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
-use objc2_foundation::{ns_string, NSArray, NSString};
+use objc2_app_kit::{
+	NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString,
+	NSPasteboardURLReadingFileURLsOnlyKey,
+};
+use objc2_foundation::{ns_string, NSArray, NSDictionary, NSNumber, NSString, NSURL};
 use std::{
 	borrow::Cow,
 	panic::{RefUnwindSafe, UnwindSafe},
+	path::{Path, PathBuf},
 };
 
 /// Returns an NSImage object on success.
@@ -30,65 +34,72 @@ fn image_from_pixels(
 	pixels: Vec<u8>,
 	width: usize,
 	height: usize,
-) -> Result<Id<objc2_app_kit::NSImage>, Box<dyn std::error::Error>> {
-	use core_graphics::{
-		base::{kCGBitmapByteOrderDefault, kCGImageAlphaLast, kCGRenderingIntentDefault, CGFloat},
-		color_space::CGColorSpace,
-		data_provider::{CGDataProvider, CustomData},
-		image::{CGImage, CGImageRef},
-	};
+) -> Result<Retained<objc2_app_kit::NSImage>, Error> {
+	use objc2::AllocAnyThread;
 	use objc2_app_kit::NSImage;
+	use objc2_core_foundation::CGFloat;
+	use objc2_core_graphics::{
+		CGBitmapInfo, CGColorRenderingIntent, CGColorSpaceCreateDeviceRGB,
+		CGDataProviderCreateWithData, CGImageAlphaInfo, CGImageCreate,
+	};
 	use objc2_foundation::NSSize;
-	use std::ffi::c_void;
+	use std::{
+		ffi::c_void,
+		ptr::{self, NonNull},
+	};
 
-	#[derive(Debug)]
-	struct PixelArray {
-		data: Vec<u8>,
+	unsafe extern "C-unwind" fn release(_info: *mut c_void, data: NonNull<c_void>, size: usize) {
+		let data = data.cast::<u8>();
+		let slice = NonNull::slice_from_raw_parts(data, size);
+		// SAFETY: This is the same slice that we got from `Box::into_raw`.
+		drop(unsafe { Box::from_raw(slice.as_ptr()) })
 	}
 
-	impl CustomData for PixelArray {
-		unsafe fn ptr(&self) -> *const u8 {
-			self.data.as_ptr()
-		}
-		unsafe fn len(&self) -> usize {
-			self.data.len()
-		}
+	let provider = {
+		let pixels = pixels.into_boxed_slice();
+		let len = pixels.len();
+		let pixels: *mut [u8] = Box::into_raw(pixels);
+		// Convert slice pointer to thin pointer.
+		let data_ptr = pixels.cast::<c_void>();
+
+		// SAFETY: The data pointer and length are valid.
+		// The info pointer can safely be NULL, we don't use it in the `release` callback.
+		unsafe { CGDataProviderCreateWithData(ptr::null_mut(), data_ptr, len, Some(release)) }
 	}
+	.unwrap();
 
-	let colorspace = CGColorSpace::create_device_rgb();
-	let pixel_data: Box<Box<dyn CustomData>> = Box::new(Box::new(PixelArray { data: pixels }));
-	let provider = unsafe { CGDataProvider::from_custom_data(pixel_data) };
+	let colorspace = unsafe { CGColorSpaceCreateDeviceRGB() }.unwrap();
 
-	let cg_image = CGImage::new(
-		width,
-		height,
-		8,
-		32,
-		4 * width,
-		&colorspace,
-		kCGBitmapByteOrderDefault | kCGImageAlphaLast,
-		&provider,
-		false,
-		kCGRenderingIntentDefault,
-	);
-
-	// Convert the owned `CGImage` into a reference `&CGImageRef`, and pass
-	// that as `*const c_void`, since `CGImageRef` does not implement
-	// `RefEncode`.
-	let cg_image: *const CGImageRef = &*cg_image;
-	let cg_image: *const c_void = cg_image.cast();
+	// XXX: If this returns an error, try running your application from the command line or
+	// use `Console.app`. For the later, make sure that before you start streaming log messages
+	// that Action -> `Include Info Messages` and Action -> `Include Debug Messages` are both
+	// enabled in the menubar. CoreGraphics will write debugging/error information to these places.
+	//
+	// - https://redsweater.com/blog/129/coregraphics-log-jam
+	// - https://github.com/1Password/arboard/issues/204
+	let cg_image = unsafe {
+		CGImageCreate(
+			width,
+			height,
+			8,
+			32,
+			4 * width,
+			Some(&colorspace),
+			CGBitmapInfo::ByteOrderDefault | CGBitmapInfo(CGImageAlphaInfo::Last.0),
+			Some(&provider),
+			ptr::null_mut(),
+			false,
+			CGColorRenderingIntent::RenderingIntentDefault,
+		)
+	}
+	.ok_or(Error::ConversionFailure)?;
 
 	let size = NSSize { width: width as CGFloat, height: height as CGFloat };
-	// XXX: Use `NSImage::initWithCGImage_size` once `objc2-app-kit` supports
-	// CoreGraphics.
-	let image: Id<NSImage> =
-		unsafe { msg_send_id![NSImage::alloc(), initWithCGImage: cg_image, size:size] };
-
-	Ok(image)
+	Ok(unsafe { NSImage::initWithCGImage_size(NSImage::alloc(), &cg_image, size) })
 }
 
 pub(crate) struct Clipboard {
-	pasteboard: Id<NSPasteboard>,
+	pasteboard: Retained<NSPasteboard>,
 }
 
 unsafe impl Send for Clipboard {}
@@ -107,8 +118,8 @@ impl Clipboard {
 		// documented not to.
 		//
 		// Otherwise we'd just use `NSPasteboard::generalPasteboard()` here.
-		let pasteboard: Option<Id<NSPasteboard>> =
-			unsafe { msg_send_id![NSPasteboard::class(), generalPasteboard] };
+		let pasteboard: Option<Retained<NSPasteboard>> =
+			unsafe { msg_send![NSPasteboard::class(), generalPasteboard] };
 
 		if let Some(pasteboard) = pasteboard {
 			Ok(Clipboard { pasteboard })
@@ -119,6 +130,26 @@ impl Clipboard {
 
 	fn clear(&mut self) {
 		unsafe { self.pasteboard.clearContents() };
+	}
+
+	fn string_from_type(&self, type_: &'static NSString) -> Result<String, Error> {
+		// XXX: There does not appear to be an alternative for obtaining text without the need for
+		// autorelease behavior.
+		autoreleasepool(|_| {
+			// XXX: We explicitly use `pasteboardItems` and not `stringForType` since the latter will concat
+			// multiple strings, if present, into one and return it instead of reading just the first which is `arboard`'s
+			// historical behavior.
+			let contents = unsafe { self.pasteboard.pasteboardItems() }
+				.ok_or_else(|| Error::unknown("NSPasteboard#pasteboardItems errored"))?;
+
+			for item in contents {
+				if let Some(string) = unsafe { item.stringForType(type_) } {
+					return Ok(string.to_string());
+				}
+			}
+
+			Err(Error::ContentNotAvailable)
+		})
 	}
 
 	// fn get_binary_contents(&mut self) -> Result<Option<ClipboardContent>, Box<dyn std::error::Error>> {
@@ -182,27 +213,11 @@ impl<'clipboard> Get<'clipboard> {
 	}
 
 	pub(crate) fn text(self) -> Result<String, Error> {
-		// XXX: There does not appear to be an alternative for obtaining text without the need for
-		// autorelease behavior.
-		autoreleasepool(|_| {
-			// XXX: We explicitly use `pasteboardItems` and not `stringForType` since the latter will concat
-			// multiple strings, if present, into one and return it instead of reading just the first which is `arboard`'s
-			// historical behavior.
-			let contents =
-				unsafe { self.clipboard.pasteboard.pasteboardItems() }.ok_or_else(|| {
-					Error::Unknown {
-						description: String::from("NSPasteboard#pasteboardItems errored"),
-					}
-				})?;
+		unsafe { self.clipboard.string_from_type(NSPasteboardTypeString) }
+	}
 
-			for item in contents {
-				if let Some(string) = unsafe { item.stringForType(NSPasteboardTypeString) } {
-					return Ok(string.to_string());
-				}
-			}
-
-			Err(Error::ContentNotAvailable)
-		})
+	pub(crate) fn html(self) -> Result<String, Error> {
+		unsafe { self.clipboard.string_from_type(NSPasteboardTypeHTML) }
 	}
 
 	#[cfg(feature = "image-data")]
@@ -216,7 +231,8 @@ impl<'clipboard> Get<'clipboard> {
 			let image_data = unsafe { self.clipboard.pasteboard.dataForType(NSPasteboardTypeTIFF) }
 				.ok_or(Error::ContentNotAvailable)?;
 
-			let data = Cursor::new(image_data.bytes());
+			// SAFETY: The data is not modified while in use here.
+			let data = Cursor::new(unsafe { image_data.as_bytes_unchecked() });
 
 			let reader = image::io::Reader::with_format(data, image::ImageFormat::Tiff);
 			reader.decode().map_err(|_| Error::ConversionFailure)
@@ -229,6 +245,35 @@ impl<'clipboard> Get<'clipboard> {
 			width: width as usize,
 			height: height as usize,
 			bytes: rgba.into_raw().into(),
+		})
+	}
+
+	pub(crate) fn file_list(self) -> Result<Vec<PathBuf>, Error> {
+		autoreleasepool(|_| {
+			let class_array = NSArray::from_slice(&[NSURL::class()]);
+			let options = NSDictionary::from_slices(
+				&[unsafe { NSPasteboardURLReadingFileURLsOnlyKey }],
+				&[NSNumber::new_bool(true).as_ref()],
+			);
+			let objects = unsafe {
+				self.clipboard
+					.pasteboard
+					.readObjectsForClasses_options(&class_array, Some(&options))
+			};
+
+			objects
+				.map(|array| {
+					array
+						.iter()
+						.filter_map(|obj| {
+							obj.downcast::<NSURL>().ok().and_then(|url| {
+								unsafe { url.path() }.map(|p| PathBuf::from(p.to_string()))
+							})
+						})
+						.collect::<Vec<_>>()
+				})
+				.filter(|file_list| !file_list.is_empty())
+				.ok_or(Error::ContentNotAvailable)
 		})
 	}
 }
@@ -246,8 +291,9 @@ impl<'clipboard> Set<'clipboard> {
 	pub(crate) fn text(self, data: Cow<'_, str>) -> Result<(), Error> {
 		self.clipboard.clear();
 
-		let string_array =
-			NSArray::from_vec(vec![ProtocolObject::from_id(NSString::from_str(&data))]);
+		let string_array = NSArray::from_retained_slice(&[ProtocolObject::from_retained(
+			NSString::from_str(&data),
+		)]);
 		let success = unsafe { self.clipboard.pasteboard.writeObjects(&string_array) };
 
 		add_clipboard_exclusions(self.clipboard, self.exclude_from_history);
@@ -255,7 +301,7 @@ impl<'clipboard> Set<'clipboard> {
 		if success {
 			Ok(())
 		} else {
-			Err(Error::Unknown { description: "NSPasteboard#writeObjects: returned false".into() })
+			Err(Error::unknown("NSPasteboard#writeObjects: returned false"))
 		}
 	}
 
@@ -289,19 +335,18 @@ impl<'clipboard> Set<'clipboard> {
 		if success {
 			Ok(())
 		} else {
-			Err(Error::Unknown { description: "NSPasteboard#writeObjects: returned false".into() })
+			Err(Error::unknown("NSPasteboard#writeObjects: returned false"))
 		}
 	}
 
 	#[cfg(feature = "image-data")]
 	pub(crate) fn image(self, data: ImageData) -> Result<(), Error> {
 		let pixels = data.bytes.into();
-		let image = image_from_pixels(pixels, data.width, data.height)
-			.map_err(|_| Error::ConversionFailure)?;
+		let image = image_from_pixels(pixels, data.width, data.height)?;
 
 		self.clipboard.clear();
 
-		let image_array = NSArray::from_vec(vec![ProtocolObject::from_id(image)]);
+		let image_array = NSArray::from_retained_slice(&[ProtocolObject::from_retained(image)]);
 		let success = unsafe { self.clipboard.pasteboard.writeObjects(&image_array) };
 
 		add_clipboard_exclusions(self.clipboard, self.exclude_from_history);
@@ -309,11 +354,40 @@ impl<'clipboard> Set<'clipboard> {
 		if success {
 			Ok(())
 		} else {
-			Err(Error::Unknown {
-				description:
-					"Failed to write the image to the pasteboard (`writeObjects` returned NO)."
-						.into(),
+			Err(Error::unknown(
+				"Failed to write the image to the pasteboard (`writeObjects` returned NO).",
+			))
+		}
+	}
+
+	pub(crate) fn file_list(self, file_list: &[impl AsRef<Path>]) -> Result<(), Error> {
+		self.clipboard.clear();
+
+		let uri_list = file_list
+			.iter()
+			.filter_map(|path| {
+				path.as_ref().canonicalize().ok().and_then(|abs_path| {
+					abs_path.to_str().map(|str| {
+						let url = unsafe { NSURL::fileURLWithPath(&NSString::from_str(str)) };
+						ProtocolObject::from_retained(url)
+					})
+				})
 			})
+			.collect::<Vec<_>>();
+
+		if uri_list.is_empty() {
+			return Err(Error::ConversionFailure);
+		}
+
+		let objects = NSArray::from_retained_slice(&uri_list);
+		let success = unsafe { self.clipboard.pasteboard.writeObjects(&objects) };
+
+		add_clipboard_exclusions(self.clipboard, self.exclude_from_history);
+
+		if success {
+			Ok(())
+		} else {
+			Err(Error::unknown("NSPasteboard#writeObjects: returned false"))
 		}
 	}
 }

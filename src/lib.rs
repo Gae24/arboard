@@ -10,7 +10,10 @@ and conditions of the chosen license apply to this file.
 #![warn(unreachable_pub)]
 
 mod common;
-use std::borrow::Cow;
+use std::{
+	borrow::Cow,
+	path::{Path, PathBuf},
+};
 
 pub use common::Error;
 #[cfg(feature = "image-data")]
@@ -192,6 +195,16 @@ impl Get<'_> {
 	pub fn image(self) -> Result<ImageData<'static>, Error> {
 		self.platform.image()
 	}
+
+	/// Completes the "get" operation by fetching HTML from the clipboard.
+	pub fn html(self) -> Result<String, Error> {
+		self.platform.html()
+	}
+
+	/// Completes the "get" operation by fetching a list of file paths from the clipboard.
+	pub fn file_list(self) -> Result<Vec<PathBuf>, Error> {
+		self.platform.file_list()
+	}
 }
 
 /// A builder for an operation that sets a value to the clipboard.
@@ -232,6 +245,11 @@ impl Set<'_> {
 	#[cfg(feature = "image-data")]
 	pub fn image(self, image: ImageData) -> Result<(), Error> {
 		self.platform.image(image)
+	}
+
+	/// Completes the "set" operation by placing a list of file paths onto the clipboard.
+	pub fn file_list(self, file_list: &[impl AsRef<Path>]) -> Result<(), Error> {
+		self.platform.file_list(file_list)
 	}
 }
 
@@ -321,6 +339,37 @@ mod tests {
 
 			ctx.set_html(html, Some(alt_text)).unwrap();
 			assert_eq!(ctx.get_text().unwrap(), alt_text);
+		}
+		{
+			let mut ctx = Clipboard::new().unwrap();
+
+			let html = "<b>hello</b> <i>world</i>!";
+
+			ctx.set().html(html, None).unwrap();
+
+			if cfg!(target_os = "macos") {
+				// Copying HTML on macOS adds wrapper content to work around
+				// historical platform bugs. We control this wrapper, so we are
+				// able to check that the full user data still appears and at what
+				// position in the final copy contents.
+				let content = ctx.get().html().unwrap();
+				assert!(content.ends_with(&format!("{html}</body></html>")));
+			} else {
+				assert_eq!(ctx.get().html().unwrap(), html);
+			}
+		}
+		{
+			let mut ctx = Clipboard::new().unwrap();
+
+			let this_dir = env!("CARGO_MANIFEST_DIR");
+
+			let paths = &[
+				PathBuf::from(this_dir).join("README.md"),
+				PathBuf::from(this_dir).join("Cargo.toml"),
+			];
+
+			ctx.set().file_list(paths).unwrap();
+			assert_eq!(ctx.get().file_list().unwrap().as_slice(), paths);
 		}
 		#[cfg(feature = "image-data")]
 		{
